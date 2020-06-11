@@ -1,0 +1,445 @@
+---
+title: "Primer ExamenParcial"
+subtitle: "Métodos Empíricos en Finanzas"
+author: "Gibrán Peniche"
+header-includes: 
+  - \usepackage{fancyhdr}
+date: ""
+output: 
+   pdf_document:
+    toc: TRUE
+    highlight: 'kate'
+    number_sections: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) # Esta opci??n hace que por default se imprima el c??digo
+knitr::opts_chunk$set(warning = FALSE) # Estas dos opciones evitan que se impriman mensajes a la hora de generar el pdf
+knitr::opts_chunk$set(message= FALSE)
+
+#Estas L??neas sirven para ajustar tama??o y orientaci??n de las gr??ficas
+knitr::opts_chunk$set(fig.width=8)
+knitr::opts_chunk$set(fig.height=5)
+knitr::opts_chunk$set(fig.align='center')
+
+```
+
+\thispagestyle{empty}
+\pagebreak
+\newpage
+\pagenumbering{arabic} 
+\fancyhead[L]{\thepage}
+\fancyhead[C]{Examen Final}
+\fancyhead[R]{Gibrán Peniche}
+\fancyfoot[L]{MEF}
+\fancyfoot[R]{ITAM}
+\pagestyle{fancy}
+\addtolength{\headheight}{1.0cm}
+\pagestyle{fancyplain}
+
+# Estacionalidad
+
+  a. $x_t = 2 x_{t-1} - x_{t-2} + w_t$  
+
+$\Rightarrow$
+
+$x_t - 2B x_t + B^2 x_t = w_t$
+
+Por lo que el polinomio carcaterístico es: $$1 - 2B + B^2 = 0$$
+
+$\Longleftrightarrow$
+
+$$(B^2 - 1) = 0$$
+
+Las raíz de este polinomio es 1 con multiplicdad 2. No está fuera del circulo unitario $\therefore$ **NO** es estacionario.
+
+  b. $x_t = 1.1 x_{t-1} w_t + 0.5 w_{t-1} + 0.2 w_{t-2}$
+  
+Vemos que $\mu_t = o$
+
+  
+# Estacionalidad y Tranformaciones
+
+Sea $$x_t = 3t^2 + w_t$$
+
+  a. **Determine si es estacionario o no**
+  
+**R:** No es estacionaria pues $\mu_t = \mu (t)$
+  
+  b. **En caso de no ser estacionario, obtenga una versión estacionaria, mediante transformaciones**.
+  
+Aplicamos primera diferencia
+
+$x_t - B x_t = 3t^2 - 3 (t^2 -2t + 1 ) +w_t - w_{t-1}$ 
+
+
+# ETF MCHI
+
+```{r libs,echo=FALSE}
+
+library(tidyverse)
+library(tidymodels)
+library(tidyquant)
+library(fable)
+library(tsibble)
+library(rugarch)
+library(vars)
+library(urca)
+library(patchwork)
+library(knitr)
+library(scales)
+
+theme_finance <- function() {
+  
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = '#1C2A32'),
+    panel.grid = element_line(linetype = 'dotted'),
+    text = element_text(face = 'bold',
+                        color = '#C3D8E3'),
+    axis.text = element_text(color = '#C1C4E3')
+    
+  )
+  
+}
+```
+
+```{r p3import, echo=FALSE}
+
+mchi <- 'MCHI' %>% 
+  tq_get(from = ymd('2019-01-01'),
+         to = ymd('2020-05-27'))
+
+
+```
+
+  a. **Incorpore una breve explicación del ETF y grafque los precios al cierre.**
+  
+**R:**  El ETF MCHI un vehículo que brinda exposición de grandes y medianas empresas chinas. Busca replicar un índice compuesto por títulos de renta variable de este mercado.
+
+```{r p3pa, echo=FALSE}
+
+mchi %>% 
+  ggplot() +
+  aes(x = date, y = close) +
+  geom_line(col = 'green') +
+  scale_y_continuous(labels = dollar_format(prefix = '$'))+
+  theme_finance() +
+  labs(title = 'ETF MCHI precios de cierre',
+       x = 'Fecha',
+       y = 'Precio')
+
+```
+
+  b. **Determine si el proceso es estacionario o no **
+  
+Utilizamos el criterio de Dickey-Fuller.[^1]
+
+[^1]: Libreria *urca*
+
+
+```{r p3b}
+mchi %>% 
+  pull(close) %>% # Extraemos el vector del df
+  ur.df(type = 'none', lags = 0) %>% 
+  summary()
+
+```
+**R:** De análisis anterior observamos evidencia a favor de la hipóteis nula de raíz unitaria por lo que concluimos que la serie de precios **NO** es estacionaria.
+
+  c. **Si no es estacionario, sugiera alguna transformación y grafique el proceso transformado.**
+
+Sugerimos la transformación diferencia 
+  
+```{r p3c, echo=FALSE}
+
+mchi <- mchi %>% 
+  mutate(dif1 = close -lag(close))
+
+mchi %>% 
+  ggplot() +
+  aes(x = date, y = dif1) +
+  geom_line(col = 'green') +
+  scale_y_continuous(labels = dollar_format(prefix = '$'))+
+  theme_finance() +
+  labs(title = 'ETF MCHI Primera diferencia',
+       x = 'Fecha',
+       y = 'Primera diferencia')
+```
+  d. **Utilizando el criterio de Akaike, determine el modelo ARIMA que mejor describe el comportamiento del precio de MCHI.**
+  
+Realizamos el ajuste del modelo ARIMA utilizando como criterio el AIC.[^2]
+
+[^2]: Utilizamos la libreria *fable* ya que actualmente la libreria *forecast* ha dejado de tener mantenimeinto aunque sigue en CRAN.
+
+```{r p3d}
+
+mchi %>% 
+  dplyr::select(date,dif1) %>% 
+  as_tsibble() %>% 
+  fill_gaps() %>% 
+  model(
+    arima = ARIMA(dif1)
+  ) %>% 
+  fabletools::report()
+
+```
+# GARCH
+
+  a. **Obtenga la serie de rendimientos de MCHI. Estime el modelo GARCH(1,1) que mejor modele la serie. En el futuro inmediato, digamos una semana, espera que MCHI tenga baja o alta volatilidad? Explique.**
+  
+```{r p4a, echo= FALSE }
+
+mchi <-  mchi %>% 
+  tq_mutate(select = close,
+            mutate_fun = dailyReturn,
+            type = 'log',
+            col_rename = 'retorno')
+
+sigma_mchi <- mchi %>% 
+  summarise(sigma = sd(retorno)*100) %>% 
+  pull(sigma)
+
+spec <- ugarchspec(mean.model = list(c(0,0)),
+                   variance.model = list('SGARCH'),
+                   distribution.model = 'norm')
+
+garch_mchi <- spec %>% 
+  ugarchfit( mchi %>% pull(retorno))
+
+coefs_garch <- garch_mchi %>% 
+  coef() 
+
+coefs_garch %>% kable(caption = 'GARCH(1,1) MCHI')
+
+coefs_garch <-  coefs_garch %>% 
+  as_tibble() 
+
+sigma_lp <- coefs_garch$value[4]/(1 - coefs_garch$value[5] - coefs_garch$value[6])*100
+
+
+
+```
+
+**R:** Del modelo concluimos que la varianza incondicional a largo plazo $\sigma^2 = \frac{\omega}{1 - \alpha - \beta}$ debe ser `r signif(sigma_lp ,5)` %. La volatilidad diaria al 27 de mayo del 2020 fue de `r signif(sigma_mchi,3)` % por lo que la volatlidad deberia disminuir.
+
+# SPY + MCHI
+
+  a. **Bajar los datos del ETF SPY, con las mismas fechas que el ETF MCHI. Lleve a cabo una prueba de raíz unitaria en ambas series para determinar si son estacionarias o no. Proporcione sus resultados y explique.**
+  
+```{r spymchi, echo=FALSE}
+
+spy <- 'SPY' %>% 
+  tq_get(from = ymd('2019-01-01'),
+         to = ymd('2020-05-27')) %>% 
+  janitor::clean_names()
+
+spy_df <- spy %>% 
+  pull(close) %>% 
+  ur.df(type = 'none', lags = 0)
+
+
+summary(spy_df)
+```
+
+**R:** Ya habíamos concluido en la pregunta 3 que el proceso MCHI no era estacionario. Después de realizar la prueba Dickey - Fuller para el SPY vemos que tampoco es estacionario, ya que hay evidencia en favr de la hipótesis nula.
+
+# Cointegracióm
+
+  a. **Independientemente del resultado obtenido en el ejercicio anterior, lleve a cabo un ejercicio de cointegración entre ambos procesos. Tengan cuidado con los datos, creo que SPY tiene unas cuantas observaciones más. Están cointegrados los procesos, si o no? Incluir ejercicio que justifique su resultado.** 
+  
+```{r p6a, echo=FALSE}
+
+spy_mchi <- spy %>% 
+  bind_rows(mchi) %>% 
+  dplyr::select(date, close, symbol) %>% 
+  pivot_wider(names_from = symbol, values_from = close) %>% 
+  janitor::clean_names()
+
+spy_mchi_lma <- lm(mchi ~ spy, spy_mchi)
+spy_mchi_lmb <- lm(spy ~ mchi, spy_mchi)
+
+pander::pander(glance(spy_mchi_lma), caption = 'Modelo MCHI - SPY')
+
+spy_mchi_lma %>% 
+  augment() %>% 
+  pull(.resid) %>% 
+  ur.df(type = 'none', lags = 0) %>% 
+  summary()
+
+pander::pander(glance(spy_mchi_lmb), caption = 'Modelo SPY - MCHI')
+
+spy_mchi_lma %>% 
+  augment() %>% 
+  pull(.resid) %>% 
+  ur.df(type = 'none', lags = 0) %>% 
+  summary()
+
+resa <- spy_mchi_lma %>% 
+  augment() %>%
+  mutate(date = spy_mchi$date) %>% 
+  ggplot() +
+  aes(x = date, y = .resid) +
+  geom_line(col = 'green') +
+  geom_hline(yintercept = 0, col = 'purple', size = 0.8) +
+  theme_finance() +
+  labs(title = 'Serie de Residuales MCHI - SPY',
+       y = 'Residuales',
+       x = 'Fecha')
+
+resb <- spy_mchi_lmb %>% 
+  augment() %>%
+  mutate(date = spy_mchi$date) %>% 
+  ggplot() +
+  aes(x = date, y = .resid) +
+  geom_line(col = 'green') +
+  geom_hline(yintercept = 0, col = 'purple', size = 0.8) +
+  theme_finance() +
+  labs(title = 'Serie de Residuales SPY - MCHI',
+       y = 'Residuales',
+       x = 'Fecha')
+  
+resa/resb
+
+
+```
+
+**R:** Por la prueba Dickey - Fuller en ambos casos parecen estar cointegrados
+
+  b. **Analizando la serie de residuos de ambos procesos, una de las dos series está rezagada en precios con respecto a la otra. Indique cual es.**
+  
+**R:** El MCHI parece estar resagado contra el SPY.
+
+# Modelos VAR
+
+  a. **Vas a llevar a cabo un análisis de ambos procesos usando el concepto de Vectores Autoregresivos. Primero estimar el mejor modelo VAR(p). **
+
+```{r p7a, echo=FALSE}
+
+seleccion <- spy_mchi %>% 
+  dplyr::select(spy,mchi) %>% 
+  VARselect(lag.max = 8, type = 'const')
+
+seleccion$selection
+
+sm <- spy_mchi %>% 
+  dplyr::select(spy, mchi) %>% 
+  VAR(p = 2)
+
+
+```
+
+**R: ** Por el criterio de informacion bayesiano concluimos que debemos de ajustar un VAR(2)
+
+```{r p7a2}
+
+
+sum_sm <- sm %>% 
+  summary() 
+
+sum_sm$varresult %>% pander::pander(caption = 'VAR(2) Ajuste')
+
+sum_sm$covres %>% pander::pander(caption = 'Matriz de Covarianza')
+
+```
+
+
+  b. Expresar explícitamente las ecuaciones del modelo. Pronosticar el precio de ambas de ambos activos a 5 días en el futuro.
+  
+Las ecuasiones del modelo son: 
+
+$$spy_{t} = 9.87 + 0.63 \cdot spy_{t-1} + 0.36 \cdot mchi_{t-1} + 0.35 \cdot spy_{t-2} + -0.42 \cdot mchi_{t-2}$$ 
+
+$$mchi_{t} = 3.07 + -0.08 \cdot spy_{t-1} + 1.12 \cdot mchi_{t-1} + 0.08 \cdot spy_{t-2} + -0.17 \cdot mchi_{t-2}$$
+
+```{r p7b, echo=FALSE}
+
+fcst <- predict(sm, n.ahead = 10)$fcst
+
+spy_p <- as_tibble(fcst$spy) %>% 
+  mutate(symbol = 'spy',
+         date = seq(from = ymd('2020-05-27'),
+                    to = ymd('2020-05-27') + days(10),
+                    length.out = 10))
+
+kable(spy_p, caption = 'Pronóstico 10 dias SPY')
+
+mchi_p <- as_tibble(fcst$mchi) %>% 
+  mutate(symbol = 'mchi',
+         date = seq(from = ymd('2020-05-27'),
+                    to = ymd('2020-05-27') + days(10),
+                    length.out = 10))
+
+kable(mchi_p, caption = 'Pronóstico 10 dias MCHI')
+
+sm_fsct <- spy_p %>%
+  bind_rows(mchi_p) %>% 
+  janitor::clean_names() %>% 
+  dplyr::select(date,fcst,lower,upper,symbol) %>% 
+  pivot_longer(-c(symbol,date)) 
+
+sm_fsct %>% 
+  mutate(name = fct_reorder(name,value,.desc = TRUE)) %>% 
+  ggplot() +
+  aes(x = date, y = value, col = name) +
+  geom_line(size = .8) +
+  facet_grid(symbol~., scales = 'free_y') +
+  scale_y_continuous(labels = scales::dollar_format(prefix = '$')) +
+  theme_finance() +
+  theme(
+    strip.text = element_text(color = '#C3D8E3'),
+    panel.border = element_rect(color = '#C3D8E3', fill = NA)
+  )+
+  labs(title = 'Pronósitico 10 dias',
+       y = 'Precio',
+       x = 'Fecha',
+       col = 'Limite')
+
+
+
+```
+
+# Pronóstico
+
+  a. **En el problema 6 crearon un modelo lineal que relaciona el precio de SPY y MCHI. Pronostique el precio de MCHI usando el modelo cointegrado del ejercicio 6 y usando los pronósticos de SPY obtenidos del ejercicio 7. Hacer lo mismo, pero ahora intercambiar los activos. Los resultados del ejercicio 7 y 8 son similares?**
+  
+```{r pnst_mchi, echo = FALSE}
+
+prst1 <- tidy(spy_mchi_lma)
+
+mchi_p <- mchi_p %>% 
+  mutate(p_coint = prst1$estimate[1] + prst1$estimate[2]*spy_p$fcst,
+         symbol = 'mchi')
+
+prst2 <- tidy(spy_mchi_lmb)
+
+spy_p <- spy_p %>% 
+  mutate(p_coint = prst2$estimate[1] + prst2$estimate[2]*mchi_p$fcst,
+         symbol = 'spy')
+
+
+coint_var <- mchi_p %>% 
+  bind_rows(spy_p) %>% 
+  dplyr::select(date,symbol,p_coint,fcst) %>% 
+  pivot_longer(-c(date,symbol))
+
+coint_var %>% 
+  ggplot() +
+  aes( x = date, y = value, col = name) +
+  geom_line(size  = 0.8) +
+  scale_y_continuous(labels = dollar_format(prefix = '$'))+
+  facet_wrap(.~symbol, scales = 'free') +
+  theme_finance() +
+  theme(
+    strip.text = element_text(color = 'white')
+  )+
+  labs(title = 'VAR vs lm',
+       x = 'Fecha',
+       y = 'Precio',
+       col = 'Modelo')
+
+```
+
+**R: ** Los resultados son similares

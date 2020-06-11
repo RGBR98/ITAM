@@ -1,0 +1,316 @@
+---
+title: "Segundo Parcial"
+subtitle: "Métodos Empíricos en Finanzas"
+author: "Gibrán Peniche"
+header-includes: 
+  - \usepackage{fancyhdr}
+date: "2020-04-01"
+output: 
+   pdf_document:
+    toc: TRUE
+    highlight: 'kate'
+    number_sections: TRUE
+editor_options: 
+  chunk_output_type: console
+mainfont: Raleway
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) # Esta opci??n hace que por default se imprima el c??digo
+knitr::opts_chunk$set(warning = FALSE) # Estas dos opciones evitan que se impriman mensajes a la hora de generar el pdf
+knitr::opts_chunk$set(message= FALSE)
+knitr::opts_chunk$set(verbose = FALSE)
+
+#Estas L??neas sirven para ajustar tama??o y orientaci??n de las gr??ficas
+knitr::opts_chunk$set(fig.width=8)
+knitr::opts_chunk$set(fig.height=5)
+knitr::opts_chunk$set(fig.align='center')
+
+theme_pro <- function(){
+  theme_minimal() +
+    theme(
+      text = element_text(family = "Bookman", color = "gray25"),
+      plot.title = element_text(color = "#2C3744", 
+                                size = 18, 
+                                face = "bold"),
+      plot.subtitle = element_text(color = "#A6A6A7",
+                                   size = 16,
+                                   face = "bold"),
+      plot.caption = element_text(color = "#A6A6A7",
+                                  size = 12,
+                                  face = "bold"),
+      plot.background = element_rect(fill = "white"),
+      plot.margin = unit(c(5, 10, 5, 10), units = "mm"),
+      axis.title.x = element_text(color = "#FF7B05",
+                                  size = 12,
+                                  face = "bold"),
+      axis.title.y = element_text(color = "#FF7B05",
+                                  size = 12,
+                                  face = "bold"),
+      axis.text.x = element_text(color = "#531F7E",
+                                 face = "bold"),
+      axis.text.y = element_text(color = "#531F7E",
+                                 face = "bold"),
+      axis.line = element_line(color="#A6A6A7"),
+      strip.text = element_text(color = "#2C3744",
+                                face = "bold"),
+      legend.title = element_text(color ="#A6A6A7",
+                                  face = "bold"),
+      legend.text = element_text(color = "#2C3744",
+                                 face = "bold")
+    )
+} 
+
+
+theme_finance <- function() {
+  
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = '#1C2A32'),
+    panel.grid = element_line(linetype = 'dotted'),
+    text = element_text(face = 'bold',
+                        color = '#C3D8E3'),
+    axis.text = element_text(color = '#C1C4E3')
+    
+  )
+  
+}
+
+```
+
+
+
+\thispagestyle{empty} 
+\pagebreak
+\newpage
+\pagenumbering{arabic} 
+\fancyhead[L]{\thepage}
+\fancyhead[C]{Segundo Parcial}
+\fancyfoot[L]{Gibrán Peniche}
+\fancyfoot[C]{Métodos Empíricos}
+\fancyfoot[R]{ITAM}
+\pagestyle{fancy}
+\addtolength{\headheight}{1.0cm}
+\pagestyle{fancyplain}
+
+```{r libraries, inlcude = FALSE}
+library(tidyverse)
+library(tidyquant)
+library(rugarch)
+library(pander)
+library(scales)
+library(here)
+
+```
+
+
+#
+
+**R:** 
+
+```{r p1, echo=FALSE}
+
+knitr::include_graphics(here('imgs','p1.jpg'))
+
+```
+
+
+\pagebreak
+
+#
+
+
+Vamos a simular la historia de un precio S. 
+
+  + $\alpha_0 = 0.7$
+  + $\alpha_1 = 0.4$
+  + $S_0 = 10$
+  + $r_0 = 0$
+  
+Enseguida vamos a simular un vector de 100 observaciones de ruido Gausiano en R usando rnorm.
+
+```{r sim}
+
+a0 <- 0.7
+a1 <- 0.4
+s0 <- 10
+
+set.seed(28)
+
+w <- rnorm(100)
+
+r <- c()
+
+sigma2 <- c()
+
+z <- c()
+
+st <- c()
+
+t<- c()
+
+for (i in 1:(length(w))) {
+  t[i] <- i
+  if(i == 1){
+    r[i] <- 0
+    sigma2[i] <- a0
+    z[i] <- 0
+    st[i] <- s0
+  }else{
+     sigma2[i] <- a0 + a1*(r[i-1]*sigma2[i-1])
+     r[i] <- w[i]*sqrt(sigma2[i])
+     z[i] <- sum(r[1:i])
+     st[i] <- exp(z[i])
+  }
+}
+
+
+s <- tibble(
+        t = t,
+        r = r,
+        s = st,
+        z = z
+     )
+
+```
+
+\pagebreak
+
+# 
+
+Grafique Z
+
+```{r p3, echo=FALSE}
+
+s %>% ggplot(aes(x = t, y = z)) +
+       geom_line( col = "#531F7E") +
+       geom_area(fill = "#531F7E", alpha = .4) +
+       theme_finance() +
+       scale_y_continuous(labels = dollar_format(prefix = '%'))+
+       labs(title = 'Proceso Z',
+            y = 'Z',
+            x = 'T')
+```
+
+\pagebreak
+
+#
+
+Grafique S
+
+```{r p4, echo=FALSE}
+
+s %>% ggplot(aes(x = t, y = s)) +
+       geom_line( col = "red") +
+       geom_area(fill = "red", alpha = .4) +
+       theme_finance() +
+       scale_y_continuous(labels = dollar_format(prefix = '$'))+
+       labs(title = 'Proceso S',
+            y = 'S',
+            x = 'T')
+
+```
+
+\pagebreak
+
+#
+
+El proceso r construido, tiene versión estacionaria? Explique.
+
+
+```{r p5, echo=FALSE}
+
+s %>% ggplot(aes(x = t, y = r)) +
+       geom_line( col = "green") +
+       geom_area(fill = "green", alpha = .4) +
+       theme_finance() +
+       labs(title = 'Proceso r',
+            y = 'R',
+            x = 'T')
+
+```
+
+**R:** Si ya que el proceso r no exhibe tendencia
+
+\pagebreak
+
+# 
+
+Consirando que el modelo de volatilidad es ahora $$ \sigma^2_t = \alpha_0 + \alpha_1 \cdot r_{t-1}^2 + \beta_1 \cdot \sigma^2_{t-1}$$
+donde $\alpha_0 = 0.5$, $\alpha_1 = 0.7$ y $\beta_1 = 0.5$, ¿obtendremos una versión estacionaria?
+
+**R:** No, ya que $\alpha_1 + \beta_1 = 1.2 > 1$
+
+\pagebreak
+
+#
+
+Analizaremos los rendimientos de los ETFs IAU y USO. Primero calcular rendimientos de ambos procesos, enseguida estimar el modelo GARCH. Graficar, indicar coefientes y concluir si tiene versión estacionaria o no.
+
+*Tomamos precios desde el 2008 ya que al tomar precios desde 2009 presentaba problemas de convergencia para el activo 'USO'*
+
+```{r import, echo=FALSE}
+activos <- c('USO','IAU') %>% 
+            tq_get(from = '2008-01-01',
+                  to = Sys.Date()) %>%
+            mutate(symbol = fct_reorder2(symbol,date,adjusted)) %>% 
+            group_by(symbol) %>% 
+            tq_mutate(select = adjusted,
+                  mutate_fun = periodReturn,
+                  period = 'daily',
+                  col_rename = 'return')
+
+```
+
+## Modelo GARCH(1,1)
+
+```{r garch, echo=FALSE, verbose = FALSE}
+
+activos <- activos %>% 
+           select(date, symbol, return) %>% 
+           spread(symbol, return) 
+
+spec <- ugarchspec(mean.model = list(c(0,0)),
+                   variance.model = list('SGARCH'),
+                   distribution.model = 'norm')
+
+m1 <- ugarchfit(data = activos %>% drop_na() %>% select(USO) %>% unlist(),
+                spec)
+
+m2 <- ugarchfit(data = activos %>% drop_na() %>% select(IAU) %>% unlist(),
+                spec)
+
+pander(tibble(Parameter = names(coef(m1)),
+              Value = coef(m1)),
+       caption = 'USO GARCH')
+
+pander(tibble(Parameter = names(coef(m2)),
+              Value = coef(m2)),
+       caption = 'IAU GARCH')
+
+```
+
+```{r plot, echo=FALSE}
+
+vols <- tibble(
+              date = activos$date,
+              USO = as.vector(fitted(m1)*100),
+              IAU = as.vector(fitted(m2)*100)
+        ) %>% 
+        gather(Activo, Vol,-date)
+
+vols %>% ggplot(aes(x = date, y = Vol, colour = Activo)) +
+         geom_line() +
+         theme_finance() +
+         scale_y_continuous(labels = dollar_format(prefix = '%'),
+                            position = 'right') +
+         facet_wrap(.~ Activo, scales = 'free') +
+         theme(
+           legend.position = 'bottom',
+         )+
+         labs(title = 'GARCH Volatilities',
+              x = 'Fecha',
+              y = 'Volatilidad')
+```
+
+**R:** Para ambos casos vemos $\alpha_1 + \beta_1 < 1$ por lo tanto existen versiones estacionarias.

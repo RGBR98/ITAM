@@ -1,0 +1,1015 @@
+---
+title: "Modelos Actuariales No Vida: Enfoque Riesgo Individual"
+subtitle: "Implementación Modelo Jerárquico para cáclulo de primas"
+author: "Gibrán Peniche González-Carpio"
+header-includes: 
+  - \usepackage{fancyhdr}
+date: "Otoño 2019"
+output: 
+   pdf_document:
+    toc: TRUE
+    highlight: 'kate'
+    number_sections: TRUE
+toc-title: "Contenido"
+editor_options: 
+  chunk_output_type: console
+mainfont: Bookman Old Style
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE) 
+knitr::opts_chunk$set(message= FALSE)
+knitr::opts_chunk$set(fig.width=8)
+knitr::opts_chunk$set(fig.height=5)
+knitr::opts_chunk$set(fig.align='center')
+
+theme_pro <- function(){
+  theme_minimal() +
+    theme(
+      text = element_text(family = "Bookman", color = "gray25"),
+      plot.title = element_text(color = "#2C3744", 
+                              size = 18, 
+                              face = "bold"),
+      plot.subtitle = element_text(color = "#A6A6A7",
+                                 size = 16,
+                                 face = "bold"),
+      plot.caption = element_text(color = "#A6A6A7",
+                                size = 12,
+                                face = "bold"),
+      plot.background = element_rect(fill = "white"),
+      plot.margin = unit(c(5, 10, 5, 10), units = "mm"),
+      axis.title.x = element_text(color = "#FF7B05",
+                                size = 12,
+                                face = "bold"),
+      axis.title.y = element_text(color = "#FF7B05",
+                                size = 12,
+                                face = "bold"),
+      axis.text.x = element_text(color = "#531F7E",
+                               face = "bold"),
+      axis.text.y = element_text(color = "#531F7E",
+                               face = "bold"),
+      axis.line = element_line(color="#A6A6A7"),
+      strip.text = element_text(color = "#2C3744",
+                                face = "bold")
+    )
+} 
+```
+
+\thispagestyle{empty}
+\pagebreak
+\newpage
+\pagenumbering{arabic} 
+\fancyhead[L]{\thepage}
+\fancyfoot[C]{Gibrán Peniche}
+\pagestyle{fancy}
+\addtolength{\headheight}{1.0cm}
+\pagestyle{fancyplain}
+\rhead{\includegraphics[height=1cm]{`r here::here('img','itam.png')`}}
+
+# Introducción
+
+La administración del riesgo es importante para cualquier empresa. En el sector asegurador no es la excepción a esta situación, y de hecho, el riesgo de insolvencia se vuelve particularmente relevante para las aseguradoras dada la función social de los productos de seguros.
+
+Para la administración del riesgo, es importante poder caracterizarlo y definirlo de tal suerte de poder cuantificar en términos monetarios la exposición que se tiene al mismo.
+
+En nuestro caso estámos en el contexto del seguro de automoviles para lo cual contamos con una base de datos que contiene la siguiente información.
+
+DatosRDA refiere a 1,340 reclamos que detalla las siguientes características:
+
+ * **CASENUM**: Numero de caso para identificar el reclamo (numerico con valores de 1 a 1340)
+
+ * **ATTORNEY**: Indicadora si el reclamante tuvo representacion legal (factor con valores =1 si tuvo representacion y =2 si no)
+
+ * **CLMSEX**: Género del reclamante (factor con valores =1 para masculino y =2 para femenino)
+
+ * **MARITAL**: Estado marital (factor con valores =1 para casado, =2 para soltero, =3 para viudo, y =4 para divorciado/seprado)
+
+ * **CLMINSUR**: Indicadora si el conductor del vehiculo tenia seguro (factor con valores =1 si estaba asegurado, =2 si no estaba asegurado, y =3 si no aplica)
+
+ * **SEATBELT**: Indicadora si el reclamante llevaba o no el cinturon de seguridad o sistema de retencion infantil (factor con valores =1 si estaba asegurado, =2 si no estaba asegurado, y =3 si no aplica)
+
+ * **CLMAGE**: Edad del reclamante (numerico)
+
+ * **LOSS**: Perdida economica total del reclamante (en miles de USD)
+ 
+Nos interesa la **distribucion de probabilidad agregada del monto de reclamo total**, **la prima de riesgo agregada**, **la prima de riesgo individual** para la cobertura para este tipo de reclamos y el **el capital míinimo requerido** para garantizar que la compania de seguros no incurra en insolvencia en un año de operación dado.
+
+## Planteamiento
+
+Nos encontramos en el enfoque de **riesgo individual** y nos interesa la distribución del monto agregado de reclamcion, al que llamaremos $Y$, con el fin de cuantificar la exposición al riesgo de la aseguradora en este portafolio de pólizas en particular. 
+
+En primer lugar, realizaremos un proceso de *licitación* de modelos con el fin de determinar que distribución sigue el monto de reclamación.
+
+Posteriormente realizaremos un ejercicio de *diversifcación de riesgos* con el fin de precisar la exposición de la aseguradora dadas las característcas del contrante.
+
+Finalmente cuantificaremos la exposición de la compañía medida a través de la prima de riesgo con el fin de determinar los requerimientos de capital para evitar una escenario de insolvencia en este portafolio de pólizas.
+
+
+```{r librerias, echo=FALSE}
+
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(readr)
+library(pander)
+library(knitr)
+library(kableExtra)
+library(naniar)
+library(scales)
+library(egg)
+library(moments)
+library(EnvStats)
+library(MASS)
+library(VGAM)
+library(GB2)
+library(evir)
+library(goftest)
+library(Temporal)
+library(rstanarm)
+library(missMDA)
+```
+
+```{r carga, include = FALSE}
+
+load(here::here('data','AutoBi.rda'))
+
+auto <- AutoBi
+
+```
+
+```{r munch, echo=FALSE}
+
+auto_texto <- auto %>%
+  mutate_all(as.character) %>% 
+  mutate(
+    ATTORNEY = case_when(ATTORNEY == "1" ~ "Con Abogado", 
+                         ATTORNEY == "2" ~ "Sin Abogado",
+                         TRUE ~ "NA"),
+    CLMSEX = case_when(CLMSEX == "1" ~ "Masculino",
+                       CLMSEX == "2" ~ "Femenino",
+                       TRUE ~ "NA"),
+    MARITAL = case_when(MARITAL == "1" ~ "Casado",
+                        MARITAL == "2" ~ "Soltero",
+                        MARITAL == "3" ~ "Viudo",
+                        MARITAL == "4" ~ "Divorciado",
+                        TRUE ~ "NA"),
+    CLMINSUR = case_when(CLMINSUR == "1" ~ "Asegurado",
+                         CLMINSUR == "2" ~ "No Asegurado",
+                         TRUE ~ "No Aplica"),
+    SEATBELT = case_when(SEATBELT == "1" ~ "Con Cinturon",
+                         SEATBELT == "2" ~ "Sin Cinturon",
+                         TRUE ~ "NA"),
+    CASENUM = as.numeric(CASENUM),
+    CLMAGE = as.numeric(CLMAGE),
+    CLMAGE = case_when(is.na(CLMAGE) == TRUE ~ "NA",
+                       CLMAGE <= 23 ~ "Generación Z",
+                       CLMAGE > 23 && CLMAGE <= 38 ~ "Millenial",
+                       CLMAGE > 38 && CLMAGE <= 50 ~ "Generación X",
+                       TRUE ~ "Baby Boomer"),
+    LOSS = as.numeric(LOSS) 
+  ) 
+
+auto_texto <- auto_texto %>% 
+  replace_with_na_all(condition = ~.x == "NA")
+
+colnames(auto_texto) <- c("id", "Abogado", "Genero", "EstadoCivil", 
+                          "Seguro", "Cinturon", "Edad", "Monto")
+
+```
+\pagebreak
+
+# Análisis Exploratorio de Datos
+
+Veamos las características principales de las variables.
+
+
+```{r estructura, echo = FALSE}
+
+pander(
+  summary(auto_texto %>% 
+            dplyr::select(-id) %>%                      mutate_if(is.character, as.factor), 
+      caption = "Estructura de los Datos")
+)
+```
+
+A continuación exploramos la distribución del total de las observaciones.
+
+```{r visual1, echo = FALSE}
+
+r <- range(auto_texto$Monto)
+
+bw <- (r[2]-r[1])/sqrt(nrow(auto_texto))
+
+a1 <- auto_texto %>% 
+  ggplot( aes( x = Monto )) +
+  geom_histogram( aes( y = ..density..),
+                  col = "#531F7E", 
+                  fill = "#79BC42",
+                  binwidth = bw) +
+  labs(title = "Monto de reclamación",
+       subtitle = "Histograma Y Diagrama de Caja Y brazos",
+       y = "Densidad",
+       x = "") +
+  scale_x_continuous( breaks = seq(from = 0,
+                                   to = 1500,
+                                   by = 100),
+                      labels=dollar_format(prefix="$")) +
+  theme_pro()
+
+a2 <- auto_texto %>% 
+  ggplot(aes(x=1, y = Monto)) + 
+  stat_boxplot(geom ='errorbar', width = 0.5) +                          geom_boxplot(fill = "#531F7E",                                                         color = "#79BC42") +
+  labs(y = "", x = "") +
+  scale_y_continuous( breaks = seq(from = 0,
+                                   to = 1500,                               by = 100),
+                      labels=dollar_format(prefix="$")) +
+  theme_pro() +
+  coord_flip()
+
+ggarrange(a1, a2, heights = 2:1)
+
+pander(tibble( Media = mean(auto_texto$Monto),
+                   Mediana = median(auto_texto$Monto),
+                   Varianza = var(auto_texto$Monto),
+                   Sesgo = skewness(auto_texto$Monto),
+                   Kurtosis = kurtosis(auto_texto$Monto)),
+        caption = "Momentos Muestrales")
+```
+
+
+Del visual y resumen de momentos anterior destaca una distribución con **sesgo** y un **rango intercuartílico** reducido, así como **observaciones de cola**.
+
+Por otro lado vale la pena estudiar la distribución del monto de reclamación condicional a las variables **cualitativas** incluidas en la base de datos. 
+
+
+```{r visual2, echo = FALSE}
+auto_largo <- auto_texto %>% 
+  dplyr::select(-id) %>% 
+  gather("variable", "valor", -Monto)
+
+id <- colnames(auto_texto)[2:7]
+
+v1 <-  auto_largo %>% 
+  filter( variable == id[1]) %>% 
+  ggplot( aes(x = Monto, fill = valor) ) +
+  geom_histogram(aes(y = ..density..),
+                 col = "gray75" ) +
+  geom_density(alpha = .05)+
+  facet_wrap( . ~ valor, scales = "free") +
+  labs(title = "Monto de reclamación",
+       subtitle = "Representación legal", 
+       y = "Densidad",
+       x = "") +
+  scale_x_continuous(labels=dollar_format(prefix="$")) +
+  theme_pro() +
+  theme(strip.text.x = element_text(size = 10,              
+                                    color = "#2C3744",                      face = "bold"),
+        legend.position = "none",
+        axis.text.x = element_blank(),
+        strip.text = element_text(size = 2.5))
+```
+```{r visual3, echo=FALSE}
+
+v2 <- auto_largo %>% 
+  filter( variable == id[2]) %>% 
+  ggplot( aes(x = Monto ) ) +
+  geom_histogram(aes(y = ..density.., fill = valor),
+                 col = "gray75" ) +
+  geom_density(alpha = .05) +
+  facet_wrap( . ~ valor, scales = "free") +
+  labs(subtitle = "Sexo",
+       y = "",
+       x = "") +
+  scale_x_continuous(labels=dollar_format(prefix="$")) +
+  theme_pro() +
+  theme(strip.text.x = element_text(size = 10, 
+                                    color = "#2C3744",
+                                    face = "bold"),
+        legend.position = "none",
+        axis.text.x = element_blank(),
+        strip.text = element_text(size = 2.5))
+```
+```{r visual4,echo = FALSE}
+
+v3 <- auto_largo %>% 
+  filter( variable == id[3]) %>% 
+  ggplot( aes(x = Monto )) +
+  geom_histogram(aes(y = ..density.., fill = valor),
+                 col = "gray75" ) +
+  geom_density(alpha = .05) +
+  facet_wrap( . ~ valor, scales = "free") +
+  labs(subtitle = "Estado Civil",
+       y = "",
+       x = "") +
+  scale_x_continuous( labels=dollar_format(prefix="$")) +
+  theme_pro() +
+  theme(strip.text.x = element_text(size = 10, 
+                                    color = "#2C3744",
+                                    face = "bold"),
+        legend.position = "none",
+        axis.text.x = element_blank(),
+        strip.text = element_text(size = 2.5))
+
+```
+```{r visual5, echo=FALSE}
+
+v4 <- auto_largo %>% 
+  filter( variable == id[4]) %>% 
+  ggplot( aes(x = Monto )) +
+  geom_histogram(aes(y = ..density.., fill = valor),
+                 col = "gray75" ) +
+  geom_density(alpha = .05) +
+  facet_wrap( . ~ valor, scales = "free") +
+  labs(subtitle = "Estado del Seguro",
+       y = "",
+       x = "") +
+  scale_x_continuous( labels=dollar_format(prefix="$")) +
+  theme_pro() +
+  theme(strip.text.x = element_text(size = 10, 
+                                    color = "#2C3744",
+                                    face = "bold"),
+        legend.position = "none",
+        axis.text.x = element_blank(),
+        strip.text = element_text(size = 2.5))
+```
+```{r visual6, echo=FALSE}
+v5 <- auto_largo %>% 
+  filter( variable == id[5]) %>% 
+  ggplot( aes(x = Monto )) +
+  geom_histogram(aes(y = ..density.., fill = valor),
+                 col = "gray75" ) +
+  geom_density(alpha = .05) +
+  facet_wrap( . ~ valor, scales = "free") +
+  labs(subtitle = "Cinturon de Seguridad",
+       y = "",
+       x = "Miles USD") +
+  scale_x_continuous( labels=dollar_format(prefix="$")) +
+  theme_pro() +
+  theme(strip.text.x = element_text(size = 10, 
+                                    color = "#2C3744",
+                                    face = "bold"),
+        legend.position = "none",
+        axis.text.x = element_blank(),
+        strip.text = element_text(size = 2.5))
+
+
+
+```
+```{r visual7, echo=FALSE, fig.height= 7, fig.width=13}
+v6 <- auto_largo %>% 
+  filter( variable == id[6]) %>% 
+  ggplot( aes(x = Monto )) +
+  geom_histogram(aes(y = ..density.., fill = valor),
+                 col = "gray75" ) +
+  geom_density(alpha = .05) +
+  facet_wrap( . ~ valor, scales = "free") +
+  labs(subtitle = "Edad",
+       y = "",
+       x = "") +
+  scale_x_continuous( labels=dollar_format(prefix="$")) +
+  theme_pro() +
+  theme(strip.text.x = element_text(size = 10,                        
+                                    color = "#2C3744",
+                                    face = "bold"),
+        legend.position = "none",
+        axis.text.x = element_blank(),
+        strip.text = element_text(size = 2.5))
+
+
+ggarrange(v1, v2, v3, v4, v5, v6, heights = 3:2)
+
+```
+
+La variables de **Representación legal** así como la de **Cinturón** son variables que se observan *ex-post*, sin embargo, del análisis anterior encontramos evidencia de que es una variable relevante para el monto de la reclamación, tanto cómo para el monto en el sentido de la magnitud de la indemnización así como en el número de reclamaciones.
+
+Explorando el monto de reclamación por **Género** del reclamante parece ser que los hombres tienen más reclamos, existe cierta propensión a que el monto sea mayor en las colas de las mujeres. Llama la atención la distribución de los datos faltantes, que podría deberse a errores de captura o identificación no binaria de género.
+
+Avancemos ahora a estudiar el monto de reclamo por **Estado Civil**. Existen diferencias importantes en las distribuciones en varios de los momentos centrales incluso en términos de multimodalidad. 
+
+Continuamos con la variable **Estado del Seguro**. Donde encontramos importantes diferencias en témino del monto del reclamo.
+
+Ahora explorando la variable **Cinturón de Seguridad**, que al igual que **Representación legal** y **Estado del Seguro**, es una variable que se observa *ex-post*, sin embargo vale la pena realizar un ajuste a la prima de riesgo por las propenciones de estas variables.
+
+Finalmente realicemos el anális de **Edad**, recordemos que esta variable ha sido codificada en **términos generacionales**.[^1]
+
+[^1]: Brechas de 7 años
+
+Llama la atención que, al menos en nuestra base de datos, ocurre que los montos se concentran en dos grupos generacionales. Recomendamos profundizar con más información más adelante en este fenómeno.
+
+Vale la pena profundizar en la condicionalidad del monto con respecto a las diferentes variables, por cuestiones de tiempo y extensión del proyecto, consideramos el análisis exploratorio visual como evidencia suficente para realizar un ejercicio de diversificación de riesgos. Recomendamos en particular explorar momentos muestrales y proporciones de los datos de cada tipo con respecto al total para robustecer, en particular, la inclusión de las variables cualitativas.
+
+Del análisis anterior llama atención varios datos no disponibles correspondientes a variables cualititativas a los que daremos tratamiento a continuación. Además existe diferencias sustanciales de la distribución del monto agregado asociado a las variables cualitativas incorporadas en la base de datos, lo cual sustenta la hipótesis de no **homogeneidad** invitando a realizar un ejercicio de *diversificación* de riesgos posterior a la licitación de modelos. 
+
+# Tratamiento de Datos Faltantes
+
+Primero realizamos un diagnóstico general de los datos faltantes. Generaremos un data frame del tipo *nabular* para indicar que valores van a ser imputados.
+
+Utilizamos la función *imputeMCA* de la libreria **missMDA** que utiliza Análisis de Correspondencia Múltiple iterando sobre proporciones de datos que si están disponibles existentes.
+
+```{r nab, echo=FALSE, include=FALSE}
+
+vis_miss(auto_texto, cluster = TRUE)
+
+auto_shadow <- bind_shadow(auto_texto)
+
+imp <- as_tibble(imputeMCA(don = dplyr::select(auto_texto, -c("id","Monto")))$completeObs)
+
+auto_c <- bind_cols(dplyr::select(auto_shadow, -c(colnames(auto_texto)[-1])),
+                    imp) %>% 
+          dplyr::select(-c("id_NA","Monto_NA")) %>% 
+          mutate(Monto = auto_texto$Monto)
+
+```
+```{r nabvis, echo = FALSE, fig.height=7, fig.width=13}
+pander(summary(auto_c[,colnames(imp)]), "Datos Completos")
+
+```
+
+
+# Ajuste de Modelos
+
+A continuación comenzaremos el proceso de licitación de modelos de probabilidad. Entre los candidatos encontramos al modelos *Lognormal*, *Pareto*, y *Beta Generalizada del segundo tipo*. En las siguientes secciones procederemos a realizar el ajuste. A pesar de que en clase estudiamos también la distribución *Pareto Generalizado* y la distribución *Gamma Generalizada*. La primera es un modelo que se utiliza generalmente para el estudio de valores extremos y el segundo presenta problemas de estimación que por cuestiones de tiempo y extensión del presente trabajo no resolveremos. Por la razones mencionadas anteriormente los dos modelos anteriores **no** participaran en el proceso de licitación.
+
+La información del modelo no tiene etiquetas temporales, por esta razón tomamos una muestra aleatoria correspondies al 80% de los datos para entrenar el modelo y el restante 20% como conjunto de prueba para el modelo.
+
+```{r entrnamiento, echo=FALSE}
+
+set.seed(666)
+
+id <- sample(nrow(auto_texto), 
+             size = floor(nrow(auto_texto)*.8))
+
+
+entrenar <- auto_texto[id,]
+
+
+prueba <- anti_join(auto_texto, entrenar)
+```
+
+## Ajuste de densidades
+
+```{r empirica, echo=FALSE}
+
+q.emp <- qemp(p = seq(from = 0, 
+                      to = 1, 
+                      len = 100), 
+                      obs = entrenar$Monto)
+
+d.emp <- tibble(dist = demp(q.emp, entrenar$Monto),
+                    monto = seq(from = min(entrenar$Monto),
+                                to = max(entrenar$Monto),
+                                len = 100))
+
+
+```
+
+```{r edf, echo = FALSE}
+
+b1 <- d.emp %>% ggplot(aes(x = monto, y = dist)) +
+          geom_line( col = "#531F7E", size = .8) +
+          theme_pro() +
+          scale_x_continuous(labels=dollar_format(prefix="$"))+
+          labs(title = "EDF",
+               x = "X",
+               y = "Frecuencia Relativa") +
+  theme(plot.caption = element_text(size = 8))
+
+
+```
+
+```{r lognormal, echo=FALSE}
+
+lognorm.fit <- fitdistr(entrenar$Monto,"lognormal")
+
+par.lognorm <- tibble(mu = lognorm.fit$estimate['meanlog'],
+                          sigma = lognorm.fit$estimate['sdlog'])
+
+entrenar.unicos <- sort(unique(entrenar$Monto))
+
+d.lognorm <- dlnorm(entrenar.unicos, 
+                    par.lognorm$mu, 
+                    par.lognorm$sigma)
+
+
+```
+
+```{r dlognormal, echo = FALSE}
+
+b2 <- tibble( monto = entrenar.unicos,
+            Densidad = d.lognorm) %>% 
+ggplot( aes(x = monto, y = Densidad) ) +
+geom_line( col = "#531F7E", 
+           size = .8) +
+theme_pro() +
+scale_x_continuous( seq(from = 0,
+                        to = 250,
+                        by = 25),
+  labels=dollar_format(prefix="$")) +
+labs(title = "Ajuste Densidad Lognormal",
+     subtitle = "Libreria MASS",
+     caption = paste("Parámetros: Mu = ",
+                     signif(par.lognorm$mu,2),
+                     ", Sigma = ",
+                     signif(par.lognorm$sigma,3)
+                     ),
+     x = "Monto")+
+  theme(plot.caption = element_text(size = 10))
+
+
+```
+
+```{r pareto, echo=FALSE}
+
+par.fit <- epareto( entrenar$Monto)
+
+par.par <- tibble( location = par.fit$parameters['location'],
+                   shape = par.fit$parameters['shape'])
+
+d.par <- EnvStats::dpareto(entrenar.unicos, 
+                           location = par.par$location, 
+                           shape = par.par$shape)
+
+
+```
+
+```{r dpareto, echo = FALSE}
+
+b3 <- tibble( Monto = entrenar.unicos,
+              Densidad = d.par/1000) %>% 
+  ggplot( aes(x = Monto, y = Densidad) ) +
+  geom_line( col = "#531F7E", 
+             size = .8) +
+  theme_pro() +
+  scale_x_continuous( seq(from = 0,
+                          to = 250,
+                          by = 25),
+                      labels=dollar_format(prefix="$")) +
+  labs(title = "Ajuste Densidad Pareto",
+       subtitle = "Libreria EnvStats",
+       caption = paste("Párametros: Ubicación = ",
+                       signif(par.par$location,2),
+                       ", Forma = ",
+                       signif(par.par$shape,3)
+                       ),
+       x = "Monto") +
+  theme(plot.caption = element_text(size = 10))
+
+
+```
+
+```{r betag, echo=FALSE}
+
+gbfit <- mlfit.gb2(entrenar$Monto)
+
+par.gb2 <- unlist(gbfit[[2]]['par'])
+
+d.gb2 <- dgb2(entrenar.unicos,
+              shape1 = par.gb2[1],
+              scale = par.gb2[2],
+              shape2 = par.gb2[3],
+              shape3 = par.gb2[4])
+
+
+```
+
+```{r dbetag, echo = FALSE, fig.height=7, fig.width=13}
+
+b4 <- tibble( monto = entrenar.unicos,
+              Densidad = d.gb2) %>% 
+  filter(monto >= 70) %>% 
+  ggplot( aes(x = monto, y = Densidad) ) +
+  geom_line( col = "#531F7E", 
+             size = .8) +
+  theme_pro() +
+  scale_x_continuous( seq(from = 0,
+                          to = 250,
+                          by = 25),
+                      labels=dollar_format(prefix="$")) +
+  labs(title = "Ajuste Densidad Beta Generalizada",
+       subtitle = "Libreria GB2",
+       caption = paste("Parámetros: Forma 1 = ",
+                       signif(par.gb2[1],2),
+                       ", Scala = ",
+                       signif(par.gb2[2],3),
+                       ", Forma 2 = ",
+                       signif(par.gb2[3],2),
+                       ", Forma 3 = ",
+                       signif(par.gb2[4],3)
+                       ),
+       x = "Monto") +
+  theme(plot.caption = element_text(size = 10))
+ggarrange(b1,b2,b3,b4)
+
+```
+Dado el ajuste anterior visualmente tenemos lo siguiente.
+
+```{r, visfit, echo=FALSE, fig.height=3}
+
+dists <- tibble(Lognormal = dlnorm(auto_texto$Monto, 
+                              par.lognorm$mu, 
+                              par.lognorm$sigma),
+                Pareto = EnvStats::dpareto(auto_texto$Monto, 
+                                           location = par.par$location, 
+                                           shape = par.par$shape),
+                "Beta Generalizada II" = dgb2(auto_texto$Monto,
+                                              shape1 = par.gb2[1],
+                                              scale = par.gb2[2],
+                                              shape2 = par.gb2[3],
+                                              shape3 = par.gb2[4]),
+                monto = auto_texto$Monto) %>% 
+  mutate(Pareto = Pareto/sum(Pareto)) %>% 
+  gather(fam, den, -monto)
+
+ggplot(dists, aes( x = monto) ) +
+  geom_histogram( aes(y = ..density..), 
+                  binwidth = bw,
+                  col = "gray50",
+                  fill = "gray85") +
+  geom_line( aes(y = den, col = fam)) +
+  scale_x_continuous(labels=dollar_format(prefix="$")) +
+  theme_pro() +
+  theme( legend.title = element_blank(),
+         legend.text = element_text(face = "bold",
+                                    color = "#A6A6A7")) +
+  coord_cartesian(ylim = c(0,.035),
+                  xlim = c(0,300))+
+  labs(title = "Monto de Reclamación",
+       subtitle = "Ajuste de Modelos",
+       y = "Densidad",
+       x = "Monto") 
+
+```
+
+# Selección de Modelos
+
+## Licitación
+
+Realizamos la licitación de modelos por los criterios de **Verosimilitud Predictiva**, **Kolmogorov-Smirnoff** y **Anderson Darling**. Buscamos escoger la distribución que mejor ajuste los datos, para utilizarla más adelante de tal suerte de determinar la prima de riesgo del portafolio.
+
+### Verosimilitud predictiva
+
+```{r vpredicitva, echo=FALSE}
+
+prueba.unicos <- sort(unique(prueba$Monto))
+
+loglik <- tibble( lognormal = dlnorm(prueba.unicos, 
+                                     par.lognorm$mu, 
+                                     par.lognorm$sigma),
+                  pareto = EnvStats::dpareto(prueba.unicos, 
+                                             location = par.par$location,  
+                                             shape = par.par$shape),
+                  betagen = dgb2(prueba.unicos,
+                                 shape1 = par.gb2[1],
+                                 scale = par.gb2[2],
+                                 shape2 = par.gb2[3],
+                                 shape3 = par.gb2[4])) %>% 
+  mutate_all(log) %>% 
+  summarise(lognormal = sum(lognormal),
+            pareto = sum(pareto),
+            beta = sum(betagen))
+
+```
+
+```{r verpred, echo = FALSE}
+
+pander(loglik, caption = "Verosimilitud Predictiva")
+
+```
+Por este criterio la distribución que mejor ajusta los datos es la Distribución Beta Generalizada del segundo tipo.
+
+### Kolmogorov Smirnoff
+
+```{r ks, echo=FALSE}
+
+ks.lognormal <- gofTest(prueba.unicos, 
+                        test = "ks", 
+                        distribution = "lnorm", 
+                        param.list = list(meanlog = par.lognorm$mu, 
+                                          sdlog = par.lognorm$sigma)
+                        )$statistic
+
+ks.pareto <- gofTest(prueba.unicos, 
+                     test = "ks", 
+                     distribution = "pareto", 
+                     param.list = list(location = par.par$location, 
+                                       shape = par.par$shape)
+                     )$statistic
+
+ks.beta <- ks.test(prueba.unicos, 
+                   "pgb2",
+                   shape1 = par.gb2[1],
+                   scale = par.gb2[2],
+                   shape2 = par.gb2[3],
+                   shape3 = par.gb2[4],
+                   exact = TRUE)$statistic
+
+kol.smir <- tibble( T_05 = 1.33/ sqrt(length(prueba.unicos)),
+                    lognormal = ks.lognormal,
+                    pareto = ks.pareto,
+                    betagen = ks.beta)
+
+```
+
+```{r kolsmir, echo = FALSE}
+
+pander(kol.smir, caption = "Prueba Kolmogorov-Smirnoff")
+```
+
+Bajo la prueba **K-S**, que por cierto es más sensible a valores más cercanos a la mediana, volvemos a concluir que la dstribución Beta Generalizada del segundo tipo es la que mejor ajusta los datos.
+
+### Anderson Darling 
+
+```{r ad, echo=FALSE}
+
+ad.lognormal <- gofTest(prueba.unicos, 
+                        test = "ad", 
+                        distribution = "lnorm", 
+                        param.list = list(meanlog = par.lognorm$mu, 
+                        sdlog = par.lognorm$sigma)
+                        )$statistic
+
+
+ad.pareto <- gofTest(prueba.unicos, 
+                        test = "ad", 
+                        distribution = "pareto", 
+                        param.list = list(location = par.par$location, 
+                                          shape = par.par$shape)
+                     )$statistic
+
+ad.beta <- ad.test(prueba.unicos, 
+                   null = "pgb2",
+                   shape1 = par.gb2[1],
+                   scale = par.gb2[2],
+                   shape2 = par.gb2[3],
+                   shape3 = par.gb2[4])$statistic
+
+and.darl <- tibble( T_05 = 2.492,
+                    lognormal = ad.lognormal,
+                    pareto = ad.pareto,
+                    betagen = ad.beta)
+
+```
+
+```{r anddarl, echo = FALSE}
+
+pander(and.darl, caption = "Prueba Anderson-Darling")
+```
+
+Hay que observar que la densidad Beta Generalizada del segundo tipo no es acotada. Por esta razón el test *A-D* no es una buena métrica de contraste en este caso. Sin embargo, por este criterio la distribución lognormal se impondría a la distribución pareto
+
+
+### Selección y Comentarios
+
+Después del proceso de licitación concluimos que de la densidad *Beta Generalizada del tipo 2* es la densidad que mejor ajusta los datos. 
+
+Por otro lado dada la evidencia a favor de un ejercicio de diversificación (*i.e* no se cumple el supuesto de **Homogeneidad**) en la secciones subsecuentes realizaremos un ajuste de modelos vía jerarquización.
+
+A pesar de que el proceso de licitación arrojó como un modelo más adecuado a la ya mencionada distribución, ocurre que por el momento las herramientas disponibles para realizar el ajuste de jerarquías para esta distribución no está disponible. Si bien construir el código para la implementación de este modelo no es difícil está más allá de los objetivos del curso y lamentablemente sujetos a las restricciones de tiempo y extensión del proyecto no es será posible implementarlo. Sin embargo valdría la pena explorar más adelante el ajuste vía modelo jerárquico para dicha distribución.
+
+Por la razones enlistadas anteriormente en los subsecuente se utilizará el modelo *Log-Normal* para realizar el ajuste del modelo jerarquico.
+
+# Cálculo de Primas
+## Prima de riesgo individual
+
+Comenzamos el cálculo de la prima individual por diversificación de riesgos vía modelos jerarquicos.
+
+Construimos primero una etiqueta que incorpora la infromación de las variables **Edad**, **Estado Civil** y **Género** de tal suerte de crear un *status* único para cada una de las combinaciones de las 3 variables que nos permitan caracterizar la distribución del monto dependiendo de las características del asegurado.
+
+Cabe señalar que las variables **Representación Legal**, **Seguro** y **Cinturón** se observan *ex-post*, por lo que no van a ser incluidas en el modelo. Sin embargo serán considerardas más adelante.
+
+La distribución dados los estatus se comporta como sigue:
+
+```{r vismodel, echo = FALSE, fig.height=3}
+
+status <- auto_c %>% 
+  unite(Status, Genero, Edad, sep = " ") %>% 
+  unite(Status, Status, EstadoCivil, sep = " ") %>% 
+  mutate(Status = enc2utf8(Status))
+
+ss <- unique(status$Status)
+
+
+status_disp <- status %>% 
+  mutate(Status = case_when(Status == ss[1] ~ "S1",
+                            Status == ss[2] ~ "S2",
+                            Status == ss[3] ~ "S3",
+                            Status == ss[4] ~ "S4",
+                            Status == ss[5] ~ "S5",
+                            Status == ss[6] ~ "S6",
+                            Status == ss[7] ~ "S7",
+                            Status == ss[8] ~ "S8",
+                            Status == ss[9] ~ "S9",
+                            Status == ss[10] ~ "S10",
+                            Status == ss[11] ~ "S11",
+                            Status == ss[12] ~ "S12",
+                            TRUE ~ "NA"))
+kable(tibble(Status = unique(status$Status),
+             "Identificador" = unique(status_disp$Status)),
+      caption = "Codificación") %>% 
+  kable_styling(position = "center")
+
+status_disp %>% 
+  ggplot( aes (x = Monto, fill = Status), 
+          col = "gray66") +
+  geom_histogram( aes( y = ..density..)) +
+  geom_density() +
+  facet_wrap( .~ Status, scales = "free") + 
+  theme_pro() +
+  scale_x_continuous(labels=dollar_format(prefix="$")) +
+  theme( legend.position = "none") +
+  theme(axis.text.x = element_blank()) +
+  labs( title = "Densidad por Status",
+        y = "Densidad")
+```
+
+Llama la atención la multimodalidad de algunos status, por lo que se recomienda un acercamiento de modelación vía mezclas que no exploraremos en este trabajo.
+
+Comenzamos por realizar el ajuste del modelo. La distribución del monto $Y$ condicional al status será de la forma: $$ Y | \iota_{i} \sim LogNormal(y | \mu_{i} , \sigma^2)$$
+  
+```{r jerarquico, echo=FALSE}
+
+modelo <- stan_lmer(log(Monto) ~ ( 1 | Status), 
+                    data = status,
+                    warmup=500, 
+                    iter=5000, 
+                    chains=3,
+                    cores=2,
+                    seed = 666)
+
+```
+
+```{r dispmodelo, echo=FALSE, fig.height=3}
+
+c <- coef(modelo)
+
+s <- as_tibble(modelo)
+
+var <- median(s$sigma)^2
+
+mus <- unlist(c)
+
+ajustes <- tibble( Monto = seq(from = 0,
+                                   to = 1000, 
+                                   by = 100)) %>% 
+  mutate( S1 = dlnorm(Monto, mus[1], var^.5),
+          S2 = dlnorm(Monto, mus[2], var^.5),
+          S3 = dlnorm(Monto, mus[3], var^.5),
+          S4 = dlnorm(Monto, mus[4], var^.5),
+          S5 = dlnorm(Monto, mus[5], var^.5),
+          S6 = dlnorm(Monto, mus[6], var^.5),
+          S7 = dlnorm(Monto, mus[7], var^.5),
+          S8 = dlnorm(Monto, mus[8], var^.5),
+          S9 = dlnorm(Monto, mus[9], var^.5),
+          S10 = dlnorm(Monto, mus[10], var^.5),
+          S11 = dlnorm(Monto, mus[11], var^.5),
+          S12 = dlnorm(Monto, mus[12], var^.5)) %>% 
+  gather(Status, Densidad, -Monto)
+
+
+ajustes %>% ggplot(aes( x = Monto, y = Densidad, col = Status)) + 
+  geom_line() +
+  facet_wrap(.~ Status, scales = "free") +
+  theme_pro() +
+  scale_x_continuous( labels = dollar_format(prefix = "$"))+
+  theme(legend.position = "None") +
+  labs(title = "Ajuste Log-Normal por Status") +
+  theme(axis.text.x = element_blank())
+```
+
+### Prima Base 
+
+Encontramos la prima de  riesgo básica $\pi_{i,base}$por estatus que corresponde a $E[ X | \iota_{i}]$ con $i = \{ Status_{i}\}$ tal que $Status_{i} =$ \{ `r unique(status$Status)` \}, cómo sigue.
+
+```{r pbdisp, echo = FALSE}
+
+pbase <- tibble(Status = unique(status_disp$Status),
+                "Prima Base" = as.vector(c$Status)) %>% 
+  mutate(Status = enc2utf8(Status))
+
+pander(pbase, caption = "Prima Básica por Status")
+
+```
+
+### Factor de Recarga
+
+```{r recarga1, echo=FALSE}
+
+repleg <- auto_c %>% 
+  dplyr::select(Monto, Abogado) %>% 
+  group_by(Abogado) %>% 
+  summarise(mean(Monto))
+
+p.abogado <- mean(auto_c$Abogado == "Con Abogado")
+
+theta1 <- as.matrix(repleg[2,2]/mean(auto_c$Monto))*p.abogado
+
+cinturon <- auto_c %>% 
+  dplyr::select(Monto, Cinturon) %>% 
+  group_by(Cinturon) %>% 
+  summarise(mean(Monto))
+
+p.cinturon <- mean(auto_c$Cinturon == "Sin Cinturon")
+
+theta2 <- as.matrix(cinturon$`mean(Monto)`[2]/mean(auto_c$Monto))*p.cinturon
+
+THETA <- (1 + theta1)*(1 + theta2)
+
+p_recarga <- tibble(Status = unique(status_disp$Status),
+                    "Prima Recarga" = pbase$`Prima Base`*THETA)
+
+
+```
+
+Sin embargo aun debemos incorporar ajustes al monto por la probabilididad de que asegurado contrate represenación legal y lleve el cinturón de seguridad para generar un simil al *factor de recarga* de la forma $\Theta_{1,2} = (1 +\theta_{1}) (1 + \theta_{2})p_{1}p_{2}$, de tal manera que la prima $\pi_{recarga}$ quede definida como $\Theta \pi_{base}$. Aqui $p_{1}$ y $p_{2}$ representan la propensión de los asegurados a solicitar asistencia legal en un areclamación y a utilizar el cinturón de seguridad mientras manejan.
+
+Construiremos el factor de recarga a partir del exceso en valor esperado de la distribución delmonto de reclamo exceso condicional a las varibles **Representación Legal** y **Cinturón de Seguridad** del valor esperado de la distribución no condicional del monto de reclamo. Resultado en $\Theta =$ `r signif(THETA,3)`
+
+Así, la prima modificada por la incidencia de Representación legal y Cinturón de seguridad es de:
+  
+```{r precargadisp, echo=FALSE}
+
+pander(p_recarga, caption = "Prima Modificada A" )
+
+```
+
+
+### Prima de Riesgo por el principio de Varianza
+
+```{r var1, echo=FALSE}
+
+c.var  <- par.lognorm$sigma/par.lognorm$mu
+
+alpha <- c.var/2
+
+```
+
+Definimos el *Coeficiente de Variación* $CV = \frac{\sigma}{\mu}$. Para los valores estimados en la sección **Ajuste de Modelos** para la densidad log-normal. Tenemos un valor de $\mu=$ `r signif(par.lognorm$mu,3)` y $\sigma=$ `r signif(par.lognorm$sigma,3)` resultando en un $CV=$ `r signif(c.var,3)`. 
+
+De este análisis concluimos que una unidad adicional en incertidumbre contribuye para nuestra parametrización propuesta con `r signif(c.var,3)` unidades de riesgo al portafolio agregado. 
+
+Si bien hay que atender a cuestiones de mercado, reservas y de solvencia, en el presente trabajo unicamente con base en el criterio anterior proponemos $\alpha = \frac{CV}{2}$ y dada la varianza estimada del modelo anterior  de `r signif(var,3)` unidades definomos la **Prima de Riesgo** $\pi_{riesgo}$ como $\pi_{base} + \alpha V[Y]$ por lo que el recargo por principio de varianza será \$ `r signif(alpha*var,3)`.
+
+
+### Tarificación
+
+Dependiendo deL **STATUS**  definido anteriormente la **Prima individual** que deberá cobrar la aseguradora estará tarificada como sigue:
+  
+```{r tarificacion , echo=FALSE}
+
+ttarifas <- p_recarga$`Prima Recarga` + alpha*var
+
+tarifas <- tibble(Status = unique(status_disp$Status),
+                  "Prima de Riesgo" = ttarifas$`(Intercept)`)
+
+pander(tarifas, caption = "Tarificación en Dólares")
+
+```
+
+
+## Prima de riesgo agregada
+
+Por el principio de varianza y para el mismo factor de $\alpha$ dado el modelo **Log Normal** la prima de riesgo será el promedio ponderado por los pesos de los status, esto ya que la prima de riesgo por principio de varianza cumple el principio de *adivitivdad*. 
+
+De esta manera la **Prima Colectiva** queda definida como $\Pi = \sum_{i=1}^L \omega_i \pi_i$ done $\pi_i$ representa la i-ésima prima individual de las *L* jerarquías del portafolio y $\omega_i$ el número de pólizas relativo al total de la i-ésima jerarquía del portafolio.
+
+
+```{r pesos, echo=FALSE}
+
+sts <- tibble( Status = tarifas$Status,
+               Prima = tarifas$`Prima de Riesgo`)
+
+pesos  <- status_disp %>% 
+  group_by(Status) %>% 
+  summarise(n = n()) %>%
+  mutate(freq = n / sum(n)) %>% 
+  left_join(sts) %>% 
+  mutate(ponderado = Prima*freq) 
+
+p_colectiva <- as.matrix(pesos %>% 
+                           summarise(p_colectiva = sum(ponderado)))
+
+```
+
+Así la prima colectiva está dada por \$`r signif(p_colectiva,3)` miles de USD,
+
+# Capital Mínimo requerido
+## Capital Operativo
+```{r kop, echo=FALSE}
+
+kop <- qlnorm(.995,
+              meanlog = par.lognorm$mu, 
+              sdlog = par.lognorm$sigma)
+
+```
+De la sección **Selección de Modelos** , *Selección y Comentarios* se planteó trabajar con el modelo lognormal. 
+Ahora bien, definimos el capital operativo $K_{op}$ como sigue $Pr(Y > K_{op}) = 0.995 \Longleftrightarrow K_{op} = q_{y}(0.995)$ .,. $Y \sim logNormal(y| \mu,\sigma^2)$. Por lo que en nuestro caso y para este portafolio de polizas en particular el **Capital Operativo** será de \$ `r signif(kop,4)` miles de USD.
+
+## Capital Mínimo Requerido
+
+```{r kmin, echo=FALSE}
+kmin <- as.matrix(kop - p_colectiva)
+
+```
+
+Finalmente el Capital Mínimo Requerido $K_{min}$ queda definido como $K_{min} = K_{op}-\Pi$. Si en nuestro caso la Prima Colectiva es de \$`r signif(p_colectiva,3)` el Capital Operativo es de \$`r signif(kop,4)` el **Capital Mínimo Requerido** es de \$`r signif(kmin,4)` miles de USD. 

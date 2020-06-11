@@ -1,0 +1,259 @@
+---
+title: "Tarea 4"
+subtitle: "Modelos ARCH y GARCH"
+author: "Gibrán Peniche"
+header-includes: 
+  - \usepackage{fancyhdr}
+date: "2020-04-01"
+output: 
+   pdf_document:
+    toc: TRUE
+    highlight: 'kate'
+    number_sections: TRUE
+editor_options: 
+  chunk_output_type: console
+mainfont: Raleway
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) # Esta opci??n hace que por default se imprima el c??digo
+knitr::opts_chunk$set(warning = FALSE) # Estas dos opciones evitan que se impriman mensajes a la hora de generar el pdf
+knitr::opts_chunk$set(message= FALSE)
+knitr::opts_chunk$set(verbose = FALSE)
+
+#Estas L??neas sirven para ajustar tama??o y orientaci??n de las gr??ficas
+knitr::opts_chunk$set(fig.width=8)
+knitr::opts_chunk$set(fig.height=5)
+knitr::opts_chunk$set(fig.align='center')
+
+theme_pro <- function(){
+  theme_minimal() +
+    theme(
+      text = element_text(family = "Bookman", color = "gray25"),
+      plot.title = element_text(color = "#2C3744", 
+                                size = 18, 
+                                face = "bold"),
+      plot.subtitle = element_text(color = "#A6A6A7",
+                                   size = 16,
+                                   face = "bold"),
+      plot.caption = element_text(color = "#A6A6A7",
+                                  size = 12,
+                                  face = "bold"),
+      plot.background = element_rect(fill = "white"),
+      plot.margin = unit(c(5, 10, 5, 10), units = "mm"),
+      axis.title.x = element_text(color = "#FF7B05",
+                                  size = 12,
+                                  face = "bold"),
+      axis.title.y = element_text(color = "#FF7B05",
+                                  size = 12,
+                                  face = "bold"),
+      axis.text.x = element_text(color = "#531F7E",
+                                 face = "bold"),
+      axis.text.y = element_text(color = "#531F7E",
+                                 face = "bold"),
+      axis.line = element_line(color="#A6A6A7"),
+      strip.text = element_text(color = "#2C3744",
+                                face = "bold"),
+      legend.title = element_text(color ="#A6A6A7",
+                                  face = "bold"),
+      legend.text = element_text(color = "#2C3744",
+                                 face = "bold")
+    )
+} 
+```
+
+
+
+\thispagestyle{empty} 
+\pagebreak
+\newpage
+\pagenumbering{arabic} 
+\fancyhead[L]{\thepage}
+\fancyhead[C]{RMarkDown}
+\fancyfoot[L]{Gibrán Peniche}
+\fancyfoot[C]{R 4 Finance}
+\fancyfoot[R]{ITAM}
+\pagestyle{fancy}
+\addtolength{\headheight}{1.0cm}
+\pagestyle{fancyplain}
+
+```{r libraries, inlcude = FALSE}
+library(tidyverse)
+library(tidyquant)
+library(rugarch)
+library(pander)
+
+```
+
+
+# Graficar series
+
+```{r import, echo=FALSE}
+activos_1 <- 'USO' %>% 
+           tq_get(from = '2008-01-01',
+                  to = '2020-03-26') %>% 
+            mutate(symbol = case_when(symbol == 'MXN=X' ~ 'MXNUSAD',
+                                      TRUE ~ symbol)) %>% 
+           tq_mutate(select = adjusted,
+                  mutate_fun = periodReturn,
+                  period = 'daily',
+                  col_rename = 'return')
+
+
+activos_2 <- 'MXN=X'%>% 
+           tq_get(from = '2008-01-01',
+                  to = '2020-03-26') %>% 
+            mutate(symbol = 'MXN')
+
+activos_2$return <- unlist(as.vector(CalculateReturns(ts(activos_2$adjusted))))
+
+activos_3 <- 'GLTR' %>% 
+              tq_get(from = '2008-01-01',
+                  to = '2020-03-26') %>% 
+                    tq_mutate(select = adjusted,
+                  mutate_fun = periodReturn,
+                  period = 'daily',
+                  col_rename = 'return')
+
+
+activos_4 <- 'TLT' %>% 
+              tq_get(from = '2008-01-01',
+                  to = '2020-03-26') %>% 
+            mutate(symbol = case_when(symbol == 'MXN=X' ~ 'MXNUSAD',
+                                      TRUE ~ symbol)) %>% 
+           tq_mutate(select = adjusted,
+                  mutate_fun = periodReturn,
+                  period = 'daily',
+                  col_rename = 'return')
+ 
+
+
+activos <- bind_rows(activos_1,activos_2)
+activos <- bind_rows(activos,activos_3)
+activos <- bind_rows(activos,activos_4) 
+
+activos %>% ggplot(aes(x = date, y = adjusted, group = symbol)) +
+            geom_line(aes(col = symbol)) +
+            facet_wrap(.~ symbol, scales = 'free') +
+            theme_pro() +
+            labs( title = 'Prices',
+                  col = 'Asset',
+                  x = 'Date',
+                  y = 'Price')
+
+```
+
+# Retornos
+
+```{r ret, echo=FALSE}
+
+activos %>% ggplot(aes(x = date, y = return, group = symbol)) +
+            geom_line(aes(col = symbol)) +
+            facet_wrap(.~ symbol, scales = 'free') +
+            theme_pro() +
+            labs( title = 'Returns',
+                  col = 'Asset',
+                  x = 'Date',
+                  y = 'Price')
+
+```
+
+
+# Volatilidad Ventana 44 dias 
+
+```{r rol_vol, echo=FALSE}
+
+rol_vol <- activos %>% 
+           group_by(symbol) %>% 
+           tq_transmute(select = return,
+                        mutate_fun = rollapply,
+                        width = 44,
+                        FUN = sd,
+                        col_rename = 'rol_vol') %>% 
+           mutate(rol_vol = rol_vol*100)
+
+rol_vol %>%  ggplot(aes(x = date, y = rol_vol, group = symbol)) +
+             geom_line(aes(col = symbol)) +
+            facet_wrap(.~ symbol, scales = 'free') +
+            theme_finance() +
+            labs( title = 'Rolling Volatility  %',
+                  subtitle = '44D Window',
+                  col = 'Asset',
+                  x = 'Date',
+                  y = 'Price') +
+  
+            
+
+
+```
+# Volatilidad Anual
+
+```{r av, echo=FALSE}
+
+vols <- activos %>% 
+  group_by(symbol) %>% 
+  summarise('Volatily %' = sd(return)*100,
+            'Anualized Volatility %' = sqrt(252)*sd(return)*100) %>% 
+  drop_na()
+
+
+vol1 <- sd(unlist(activos %>% 
+                    filter(symbol == 'MXN') %>% 
+                    select(return)),
+           na.rm = TRUE)*100
+
+vol1 <- data_frame(symbol ='MXN', 
+                            'Volatily %' = vol1,
+                            'Anualized Volatility %'=vol1*sqrt(252))
+
+a_vol <- bind_rows(vols,vol1)
+
+pander(a_vol, caption = 'Daily & Annual Volatilities')
+
+```
+
+# Modelo GARCH(1,1)
+
+```{r garch, echo=FALSE}
+
+activos <- activos %>% 
+           select(date, symbol, return) %>% 
+           spread(symbol, return) 
+
+spec <- ugarchspec(mean.model = list(c(0,0)),
+                   variance.model = list('SGARCH'),
+                   distribution.model = 'norm')
+
+m1 <- ugarchfit(data = activos %>% drop_na() %>% select(GLTR) %>% unlist(),
+                spec)
+
+m2 <- ugarchfit(data = activos %>% drop_na() %>% select(MXN) %>% unlist(),
+                spec)
+
+m3 <- ugarchfit(data = activos %>% drop_na() %>% select(TLT) %>% unlist(),
+                spec)
+
+m4 <- ugarchfit(data = activos %>% drop_na() %>% select(USO) %>% unlist(),
+                spec)
+
+pander(coef(m1), caption = 'GLTR GARCH')
+
+pander(coef(m2), caption = 'MXN-USD GARCH')
+
+pander(coef(m3), caption = 'TLT GARCH')
+
+pander(coef(m4), caption = 'USO GARCH')
+```
+
+# Varianza Incondicional
+
+```{r ucv, echo=FALSE}
+
+ucv <- data_frame(symbol = c('GLTR','MXN','TLT','USO'),
+                  'Unconditional Variance'= signif(c(uncvariance(m1)*100,
+                                              uncvariance(m2)*100,
+                                              uncvariance(m3)*100,
+                                              uncvariance(m4)*100),4))
+pander(ucv, caption = 'GARCH Unconditional Variance %')
+```
+
